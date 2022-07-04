@@ -15,8 +15,8 @@
 # under the License.
 set -ex
 
-if [ ! -d out/crc ]; then
-  mkdir -p out/crc
+if [ ! -d out/crc/storage ]; then
+  mkdir -p out/crc/storage
 fi
 
 NODE_NAME=$(oc get node -o name | sed -e 's|node/||')
@@ -25,9 +25,9 @@ if [ -z "$NODE_NAME" ]; then
   exit 1
 fi
 
-cat > out/crc/kustomization.yaml <<EOF_CAT
+cat > out/crc/storage/kustomization.yaml <<EOF_CAT
 resources:
-- ../../crc
+- ../../../crc/storage
 patches:
 - patch: |-
     - op: replace

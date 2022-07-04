@@ -3,17 +3,18 @@ NAMESPACE           ?= openstack
 PASSWORD            ?= 12345678
 SECRET              ?= osp-secret
 OUT                 ?= ${PWD}/out
+TLS                 ?= 0
 # operators gets cloned here
 OPERATOR_BASE_DIR   ?= ${OUT}/operator
 
 # Keystone
-KEYSTONE_IMG        ?= quay.io/openstack-k8s-operators/keystone-operator-index:latest
+KEYSTONE_IMG        ?= quay.io/olliewalsh/keystone-operator-index:v0.0.1
 KEYSTONE_REPO       ?= https://github.com/openstack-k8s-operators/keystone-operator.git
 KEYSTONE_BRANCH     ?= master
 KEYSTONEAPI         ?= config/samples/keystone_v1beta1_keystoneapi.yaml
 
 # Mariadb
-MARIADB_IMG         ?= quay.io/openstack-k8s-operators/mariadb-operator-index:latest
+MARIADB_IMG         ?= quay.io/olliewalsh/mariadb-operator-index:v0.0.22
 MARIADB_REPO        ?= https://github.com/openstack-k8s-operators/mariadb-operator.git
 MARIADB_BRANCH      ?= master
 MARIADB             ?= config/samples/mariadb_v1beta1_mariadb.yaml
@@ -65,12 +66,12 @@ deploy_cleanup: placement_deploy_cleanup keystone_deploy_cleanup mariadb_deploy_
 crc_storage: ## initialize local storage PVs in CRC vm
 	bash scripts/create-pv.sh
 	bash scripts/gen-crc-pv-kustomize.sh
-	oc kustomize ${OUT}/crc | oc apply -f -
+	oc kustomize ${OUT}/crc/storage/ | oc apply -f -
 
 crc_storage_cleanup: ## cleanup local storage PVs in CRC vm
-	oc get pv | grep local | cut -f 1 -d ' ' | xargs oc delete pv
-	oc delete sc local-storage
-	#FIXME need to cleanup the actual directories in the CRC VM too
+	(oc get pv | grep local | cut -f 1 -d ' ' | xargs oc delete pv) || true
+	oc delete sc local-storage || true
+	bash scripts/delete-pv.sh
 
 ##@ NAMESPACE
 .PHONY: namespace
@@ -109,7 +110,7 @@ keystone_prep: ## creates the files to install the operator using olm
 	bash scripts/gen-olm.sh
 
 .PHONY: keystone
-keystone: namespace keystone_prep ## installs the operator, also runs the prep step. Set KEYSTONE_IMG for custom image.
+keystone: ca namespace keystone_prep ## installs the operator, also runs the prep step. Set KEYSTONE_IMG for custom image.
 	$(eval $(call vars,$@,keystone))
 	oc apply -f ${OPERATOR_DIR}
 
@@ -126,7 +127,7 @@ keystone_deploy_prep: keystone_deploy_cleanup ## prepares the CR to install the 
 	mkdir -p ${OPERATOR_BASE_DIR} ${OPERATOR_DIR} ${DEPLOY_DIR}
 	pushd ${OPERATOR_BASE_DIR} && git clone -b ${KEYSTONE_BRANCH} ${KEYSTONE_REPO} && popd
 	cp ${OPERATOR_BASE_DIR}/keystone-operator/${KEYSTONEAPI} ${DEPLOY_DIR}
-	bash scripts/gen-service-kustomize.sh
+	TLS=0 bash scripts/gen-service-kustomize.sh
 
 .PHONY: keystone_deploy
 keystone_deploy: input keystone_deploy_prep ## installs the service instance using kustomize. Runs prep step in advance. Set KEYSTONE_REPO and KEYSTONE_BRANCH to deploy from a custom repo.
@@ -146,7 +147,7 @@ mariadb_prep: ## creates the files to install the operator using olm
 	bash scripts/gen-olm.sh
 
 .PHONY: mariadb
-mariadb: namespace mariadb_prep ## installs the operator, also runs the prep step. Set MARIADB_IMG for custom image.
+mariadb: ca namespace mariadb_prep ## installs the operator, also runs the prep step. Set MARIADB_IMG for custom image.
 	$(eval $(call vars,$@,mariadb))
 	oc apply -f ${OPERATOR_DIR}
 
@@ -164,6 +165,8 @@ mariadb_deploy_prep: mariadb_deploy_cleanup ## prepares the CRs files to install
 	pushd ${OPERATOR_BASE_DIR} && git clone -b ${MARIADB_BRANCH} ${MARIADB_REPO} && popd
 	cp ${OPERATOR_BASE_DIR}/mariadb-operator/${MARIADB} ${DEPLOY_DIR}
 	bash scripts/gen-service-kustomize.sh
+	TLS_DNSNAME=$$(kustomize cfg grep "kind=${KIND}" ${DEPLOY_DIR} | kustomize cfg tree --field="metadata.name" - |  sed -ne 's/.*metadata\.name: \(.*\)/\1/p') \
+	  bash -x scripts/gen-tls-secret.sh
 
 .PHONY: mariadb_deploy
 mariadb_deploy: input mariadb_deploy_prep ## installs the service instance using kustomize. Runs prep step in advance. Set MARIADB_REPO and MARIADB_BRANCH to deploy from a custom repo.
@@ -201,7 +204,7 @@ placement_deploy_prep: placement_deploy_cleanup ## prepares the CR to install th
 	mkdir -p ${OPERATOR_BASE_DIR} ${OPERATOR_DIR} ${DEPLOY_DIR}
 	pushd ${OPERATOR_BASE_DIR} && git clone -b ${PLACEMENT_BRANCH} ${PLACEMENT_REPO} && popd
 	cp ${OPERATOR_BASE_DIR}/placement-operator/${PLACEMENTAPI} ${DEPLOY_DIR}
-	bash scripts/gen-service-kustomize.sh
+	TLS=0 bash scripts/gen-service-kustomize.sh
 
 .PHONY: placement_deploy
 placement_deploy: input placement_deploy_prep ## installs the service instance using kustomize. Runs prep step in advance. Set PLACEMENT_REPO and PLACEMENT_BRANCH to deploy from a custom repo.
@@ -214,3 +217,16 @@ placement_deploy_cleanup: ## cleans up the service instance, Does not affect the
 	oc kustomize ${DEPLOY_DIR} | oc delete --ignore-not-found=true -f -
 	rm -Rf ${OPERATOR_BASE_DIR}/placement-operator ${DEPLOY_DIR}
 
+.PHONY: cert_manager
+cert_manager:
+ifeq ($(TLS),1)
+	oc apply -f crc/cert-manager/
+endif
+
+.PHONE: ca
+ca: cert_manager namespace
+ifeq ($(TLS),1)
+	$(eval $(call vars,$@))
+	bash scripts/gen-ca.sh
+	oc apply -f ${OUT}/${NAMESPACE}/ca.yaml
+endif

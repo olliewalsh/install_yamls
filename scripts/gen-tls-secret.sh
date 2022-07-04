@@ -27,12 +27,12 @@ if [ -z "$KIND" ]; then
       echo "Please set SERVICE"; exit 1
 fi
 
-if [ -z "$SECRET" ]; then
-      echo "Please set SECRET"; exit 1
-fi
-
 if [ -z "$DEPLOY_DIR" ]; then
       echo "Please set DEPLOY_DIR"; exit 1
+fi
+
+if [ -z "$TLS_DNSNAME" ]; then
+      echo "Please set TLS_DNSNAME"; exit 1
 fi
 
 NAME=${KIND,,}
@@ -43,32 +43,37 @@ fi
 
 pushd ${DEPLOY_DIR}
 
-cat <<EOF >kustomization.yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-namespace: ${NAMESPACE}
-patches:
-- patch: |-
-    - op: replace
-      path: /spec/secret
-      value: ${SECRET}
-  target:
-    kind: ${KIND}
+cat <<EOF > ${NAME}-tls-secret.yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${NAME}
+  namespace: ${NAMESPACE}
+spec:
+  # Secret names are always required.
+  secretName: ${NAME}-tls-secret
+  duration: 2h
+  renewBefore: 1h
+  subject:
+    organizations:
+      - Red Hat
+  isCA: false
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS1
+    size: 2048
+  usages:
+    - server auth
+    - client auth
+  dnsNames:
+    - ${TLS_DNSNAME}
+    - ${TLS_DNSNAME}.${NAMESPACE}
+    - ${TLS_DNSNAME}.${NAMESPACE}.svc.cluster.local
+  issuerRef:
+    name: openstack-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
 EOF
-if [ "${TLS:-0}" = 1 ]; then
-cat <<EOF >>kustomization.yaml
-- patch: |-
-    - op: replace
-      path: /spec/tls
-      value:
-        secretName: ${NAME}-tls-secret
-        caSecretName: ${NAME}-tls-secret
-  target:
-    kind: ${KIND}
-EOF
-
-fi
 
 kustomization_add_resources
 
